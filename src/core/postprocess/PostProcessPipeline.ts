@@ -298,7 +298,6 @@ export class PostProcessPipeline {
             this.dispatchBloomDownsample(encoder, currentHDRView, settings);
             this.dispatchBloomUpsample(encoder);
             this.dispatchBloomApply(encoder, currentHDRView, outputView, settings);
-            this.dispatchTonemap(encoder, outputView, outputView, false);
             return;
         }
 

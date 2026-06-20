@@ -6,7 +6,7 @@ export type mat4 = any;
 export interface TriangleData {
     v0: vec3; v1: vec3; v2: vec3;
     n0: vec3; n1: vec3; n2: vec3;
-    uv0: vec2; uv1: vec2;
+    uv0: vec2; uv1: vec2; uv2: vec2;
     materialID: number;
 }
 

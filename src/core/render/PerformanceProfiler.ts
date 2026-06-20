@@ -92,12 +92,14 @@ export class PerformanceProfiler {
     beginFrame(encoder: GPUCommandEncoder): void {
         if (!this.available || !this.querySet) {
             this.frameStartTime = performance.now();
+            this.metrics.passTimes = {};
             return;
         }
 
         this.currentQueryIndex = 0;
         this.passIndices.clear();
         this.frameStartTime = performance.now();
+        this.metrics.passTimes = {};
 
         this.writeTimestamp(encoder, this.currentQueryIndex);
         this.currentQueryIndex++;

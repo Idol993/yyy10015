@@ -203,10 +203,10 @@ export class PathTracer {
 
                 triData[offset + 24] = tri.uv0.x; triData[offset + 25] = tri.uv0.y;
                 triData[offset + 26] = tri.uv1.x; triData[offset + 27] = tri.uv1.y;
+                triData[offset + 28] = tri.uv2.x; triData[offset + 29] = tri.uv2.y;
 
-                triData[offset + 28] = tri.materialID;
-                triData[offset + 29] = 0;
-                triData[offset + 30] = 0;
+                const triDataU32 = triData as unknown as Uint32Array;
+                triDataU32[offset + 30] = tri.materialID | 0;
                 triData[offset + 31] = 0;
             }
             device.queue.writeBuffer(this.triangleDataBuffer, 0, triData);
@@ -258,9 +258,9 @@ export class PathTracer {
                 if (mat.doubleSided > 0) flags |= 0x80;
                 matDataU32[offset + 16] = flags;
 
-                matData[offset + 17] = 0;
-                matData[offset + 18] = 0;
-                matData[offset + 19] = 0;
+                matDataU32[offset + 17] = mat.baseColorTexture | 0;
+                matDataU32[offset + 18] = mat.metallicRoughnessTexture | 0;
+                matDataU32[offset + 19] = mat.emissiveTexture | 0;
             }
             device.queue.writeBuffer(this.materialDataBuffer, 0, matData);
         }

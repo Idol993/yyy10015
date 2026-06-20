@@ -339,6 +339,77 @@ export class GLTFLoader {
         return await this.parse();
     }
 
+    async loadFromFiles(files: FileList | File[]): Promise<LoadedGLTF> {
+        const fileArray = Array.from(files);
+        const gltfFile = fileArray.find(f => f.name.endsWith('.gltf') || f.name.endsWith('.glb'));
+
+        if (!gltfFile) {
+            throw new Error('未找到 .gltf 或 .glb 文件，请确保选择了正确的模型文件');
+        }
+
+        const fileMap = new Map<string, File>();
+        for (const file of fileArray) {
+            fileMap.set(file.name, file);
+        }
+
+        if (gltfFile.name.endsWith('.glb')) {
+            const arrayBuffer = await gltfFile.arrayBuffer();
+            return await this.parseGLB(arrayBuffer);
+        }
+
+        const jsonStr = await gltfFile.text();
+        this.gltf = JSON.parse(jsonStr);
+
+        const missingResources: string[] = [];
+
+        if (this.gltf.buffers) {
+            this.buffers = [];
+            for (let i = 0; i < this.gltf.buffers.length; i++) {
+                const buffer = this.gltf.buffers[i];
+                if (buffer.uri && !buffer.uri.startsWith('data:')) {
+                    const bufferFile = fileMap.get(buffer.uri);
+                    if (!bufferFile) {
+                        missingResources.push(buffer.uri);
+                        this.buffers[i] = new ArrayBuffer(0);
+                    } else {
+                        this.buffers[i] = await bufferFile.arrayBuffer();
+                    }
+                } else if (buffer.uri?.startsWith('data:')) {
+                    const response = await fetch(buffer.uri);
+                    this.buffers[i] = await response.arrayBuffer();
+                } else {
+                    this.buffers[i] = new ArrayBuffer(0);
+                }
+            }
+        }
+
+        if (this.gltf.images) {
+            for (let i = 0; i < this.gltf.images.length; i++) {
+                const image = this.gltf.images[i];
+                if (image.uri && !image.uri.startsWith('data:')) {
+                    const imageFile = fileMap.get(image.uri);
+                    if (!imageFile) {
+                        missingResources.push(image.uri);
+                    } else {
+                        const blob = new Blob([await imageFile.arrayBuffer()], {
+                            type: imageFile.type || 'image/png'
+                        });
+                        const url = URL.createObjectURL(blob);
+                        (image as any)._objectUrl = url;
+                    }
+                }
+            }
+        }
+
+        if (missingResources.length > 0) {
+            const errorMsg = `缺少以下资源文件，请确保一起选择：\n${missingResources.map(r => `  - ${r}`).join('\n')}`;
+            console.warn(errorMsg);
+            throw new Error(errorMsg);
+        }
+
+        return await this.parse();
+    }
+
     private isGLB(buffer: ArrayBuffer): boolean {
         const magic = new Uint32Array(buffer, 0, 1)[0];
         return magic === 0x46546C67;
@@ -884,12 +955,17 @@ export class GLTFLoader {
         return textures;
     }
 
-    private async createGPUTexture(image: GLTFImage): Promise<GPUTexture | null> {
+    private async createGPUTexture(image: GLTFImage & { _objectUrl?: string }): Promise<GPUTexture | null> {
         if (!this.device) return null;
 
         let imageBitmap: ImageBitmap | null = null;
 
-        if (image.uri) {
+        if (image._objectUrl) {
+            const response = await fetch(image._objectUrl);
+            const blob = await response.blob();
+            imageBitmap = await createImageBitmap(blob);
+            URL.revokeObjectURL(image._objectUrl);
+        } else if (image.uri) {
             if (image.uri.startsWith('data:')) {
                 const response = await fetch(image.uri);
                 const blob = await response.blob();
@@ -1279,6 +1355,7 @@ export class GLTFLoader {
                 n2: { x: n2[0], y: n2[1], z: n2[2] },
                 uv0: { x: uv0[0][0], y: uv0[0][1] },
                 uv1: { x: uv0[1][0], y: uv0[1][1] },
+                uv2: { x: uv0[2][0], y: uv0[2][1] },
                 materialID,
                 _baseColor: triBaseColor,
             } as TriangleData & { _baseColor?: typeof triBaseColor });

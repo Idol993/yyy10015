@@ -6,7 +6,7 @@ import type { SceneData } from '@/types';
 
 interface SceneLoaderProps {
     onSceneLoaded: (sceneData: SceneData) => void;
-    onGLTFFileSelected?: (file: File) => void;
+    onGLTFFileSelected?: (files: FileList | File[]) => void;
 }
 
 const presetScenes = [
@@ -43,13 +43,13 @@ export default function SceneLoader({ onSceneLoaded, onGLTFFileSelected }: Scene
     };
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
 
         if (onGLTFFileSelected) {
             setIsLoading(true);
             setLoading(true);
-            onGLTFFileSelected(file);
+            onGLTFFileSelected(files);
             setIsLoading(false);
             setLoading(false);
             if (fileInputRef.current) {
@@ -62,17 +62,16 @@ export default function SceneLoader({ onSceneLoaded, onGLTFFileSelected }: Scene
         setLoading(true);
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const blob = new Blob([arrayBuffer], {
-                type: file.name.endsWith('.glb') ? 'model/gltf-binary' : 'model/gltf+json',
-            });
-            const url = URL.createObjectURL(blob);
+            const fileArray = Array.from(files);
+            const gltfFile = fileArray.find(f => f.name.endsWith('.gltf') || f.name.endsWith('.glb'));
+
+            if (!gltfFile) {
+                throw new Error('未找到 .gltf 或 .glb 文件');
+            }
 
             const { SceneManager } = await import('@/core/scene/SceneManager');
             const tempManager = new SceneManager();
-            const loaded = await tempManager.loadGLTF(url);
-
-            URL.revokeObjectURL(url);
+            const loaded = await tempManager.loadGLTFFromFiles(files);
 
             onSceneLoaded(loaded.sceneData);
             updateSceneInfo({
@@ -116,7 +115,8 @@ export default function SceneLoader({ onSceneLoaded, onGLTFFileSelected }: Scene
                 <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".gltf,.glb"
+                    multiple
+                    accept=".gltf,.glb,.png,.jpg,.jpeg"
                     onChange={handleFileUpload}
                     className="hidden"
                     id="gltf-upload"
@@ -126,7 +126,7 @@ export default function SceneLoader({ onSceneLoaded, onGLTFFileSelected }: Scene
                     className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-cyan-500/20 to-purple-500/20 hover:from-cyan-500/30 hover:to-purple-500/30 border border-cyan-500/30 hover:border-cyan-500/50 transition-all text-sm text-gray-200 cursor-pointer disabled:opacity-50"
                 >
                     <Upload size={16} className="text-cyan-400" />
-                    <span>上传 GLTF</span>
+                    <span>上传 GLTF (可多选贴图)</span>
                 </label>
             </div>
         </div>

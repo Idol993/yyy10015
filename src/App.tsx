@@ -157,6 +157,9 @@ export default function App() {
                 markRebuilt(): void {
                     bvhBuilder.markRebuilt();
                 },
+                getNodeCount(): number {
+                    return bvhBuilder.getNodeCount();
+                },
             };
 
             const denoiserAdapter: RenderSchedulerDeps['denoiser'] = {
@@ -254,7 +257,7 @@ export default function App() {
         }
     }, [updateCameraParams, updateSceneInfo]);
 
-    const handleGLTFFileSelected = useCallback(async (file: File) => {
+    const handleGLTFFileSelected = useCallback(async (files: FileList | File[]) => {
         const sceneManager = sceneManagerRef.current;
         const scheduler = schedulerRef.current;
         const setLoading = useRendererStore.getState().setLoading;
@@ -266,14 +269,7 @@ export default function App() {
         setLoading(true);
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const blob = new Blob([arrayBuffer], {
-                type: file.name.endsWith('.glb') ? 'model/gltf-binary' : 'model/gltf+json',
-            });
-            const url = URL.createObjectURL(blob);
-
-            const loaded = await sceneManager.loadGLTF(url);
-            URL.revokeObjectURL(url);
+            const loaded = await sceneManager.loadGLTFFromFiles(files);
 
             sceneManager.uploadToGPU();
             scheduler.setScene(sceneManager.getSceneData());

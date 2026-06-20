@@ -22,7 +22,7 @@ struct TriangleData {
     n1: vec3<f32>, pad4: u32,
     n2: vec3<f32>, pad5: u32,
     uv0: vec2<f32>, uv1: vec2<f32>,
-    materialID: u32, pad6: u32,
+    uv2: vec2<f32>, materialID: u32,
 }
 
 struct BVHNodeData {
@@ -419,7 +419,7 @@ fn get_surface_interaction(hit: RayHit, ray: Ray) -> SurfaceInteraction {
     let w = 1.0 - hit.u - hit.v;
     let position = w * tri.v0 + hit.u * tri.v1 + hit.v * tri.v2;
     let normal = normalize(w * tri.n0 + hit.u * tri.n1 + hit.v * tri.n2);
-    let uv = w * tri.uv0 + hit.u * tri.uv1 + vec2<f32>(0.0);
+    let uv = w * tri.uv0 + hit.u * tri.uv1 + hit.v * tri.uv2;
 
     var si: SurfaceInteraction;
     si.position = position;

@@ -27,6 +27,7 @@ export interface RenderSchedulerDeps {
         needsRebuild(): boolean;
         build(encoder: GPUCommandEncoder, sceneData: SceneData): void;
         markRebuilt(): void;
+        getNodeCount(): number;
     };
     denoiser: {
         denoise(
@@ -182,7 +183,6 @@ export class RenderScheduler {
             this.hasCameraChanged(camera);
 
         if (resetAccum) {
-            this.bvhBuilder.markRebuilt();
             this.pathTracer.resetAccumulation();
             this.denoiser.resetHistory?.();
             this.lastSceneVersion = this.sceneVersion;
@@ -197,7 +197,7 @@ export class RenderScheduler {
             this.profiler.beginPass(encoder, PassName.BVH_BUILD);
             this.bvhBuilder.build(encoder, this.sceneData);
             this.profiler.endPass(encoder, PassName.BVH_BUILD);
-            this.profiler.setSceneStats(this.sceneData.triangles.length, 0);
+            this.profiler.setSceneStats(this.sceneData.triangles.length, this.bvhBuilder.getNodeCount());
         }
 
         this.profiler.beginPass(encoder, PassName.PATH_TRACE);

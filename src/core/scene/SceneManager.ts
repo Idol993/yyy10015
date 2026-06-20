@@ -86,7 +86,15 @@ export class SceneManager {
 
     async loadGLTF(url: string): Promise<LoadedGLTF> {
         const loaded = await this.gltfLoader.load(url);
+        return this.processLoadedGLTF(loaded);
+    }
 
+    async loadGLTFFromFiles(files: FileList | File[]): Promise<LoadedGLTF> {
+        const loaded = await this.gltfLoader.loadFromFiles(files);
+        return this.processLoadedGLTF(loaded);
+    }
+
+    private async processLoadedGLTF(loaded: LoadedGLTF): Promise<LoadedGLTF> {
         this.triangles = loaded.sceneData.triangles;
         this.materials = loaded.sceneData.materials;
         this.instances = loaded.sceneData.instances;
@@ -910,10 +918,11 @@ export class SceneManager {
             data[offset + 25] = tri.uv0.y;
             data[offset + 26] = tri.uv1.x;
             data[offset + 27] = tri.uv1.y;
+            data[offset + 28] = tri.uv2.x;
+            data[offset + 29] = tri.uv2.y;
 
-            data[offset + 28] = tri.materialID;
-            data[offset + 29] = 0;
-            data[offset + 30] = 0;
+            const dataU32 = data as unknown as Uint32Array;
+            dataU32[offset + 30] = tri.materialID | 0;
             data[offset + 31] = 0;
         }
 

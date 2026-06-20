@@ -64,6 +64,7 @@ function createTriangle(
         n2: normal,
         uv0: u0,
         uv1: { x: 0.5, y: 1 },
+        uv2: { x: 1, y: 0 },
         materialID,
     };
 }
@@ -159,7 +160,8 @@ function generateSphereTriangles(
                 n1,
                 n2,
                 uv0: { x: lon / lonBands, y: lat / latBands },
-                uv1: { x: (lon + 1) / lonBands, y: (lat + 1) / latBands },
+                uv1: { x: (lon + 1) / lonBands, y: lat / latBands },
+                uv2: { x: (lon + 1) / lonBands, y: (lat + 1) / latBands },
                 materialID,
             });
 
@@ -172,6 +174,7 @@ function generateSphereTriangles(
                 n2: n3,
                 uv0: { x: lon / lonBands, y: lat / latBands },
                 uv1: { x: (lon + 1) / lonBands, y: (lat + 1) / latBands },
+                uv2: { x: lon / lonBands, y: (lat + 1) / latBands },
                 materialID,
             });
         }
