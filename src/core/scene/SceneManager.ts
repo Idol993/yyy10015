@@ -874,27 +874,47 @@ export class SceneManager {
         const data = new Float32Array(buffer.getMappedRange());
         for (let i = 0; i < this.triangles.length; i++) {
             const tri = this.triangles[i];
-            const offset = i * 16;
+            const offset = i * (TRIANGLE_SIZE / 4);
 
-            data[offset] = tri.v0.x;
+            data[offset + 0] = tri.v0.x;
             data[offset + 1] = tri.v0.y;
             data[offset + 2] = tri.v0.z;
-            data[offset + 3] = tri.uv0.x;
+            data[offset + 3] = 0;
 
             data[offset + 4] = tri.v1.x;
             data[offset + 5] = tri.v1.y;
             data[offset + 6] = tri.v1.z;
-            data[offset + 7] = tri.uv0.y;
+            data[offset + 7] = 0;
 
             data[offset + 8] = tri.v2.x;
             data[offset + 9] = tri.v2.y;
             data[offset + 10] = tri.v2.z;
-            data[offset + 11] = tri.uv1.x;
+            data[offset + 11] = 0;
 
             data[offset + 12] = tri.n0.x;
             data[offset + 13] = tri.n0.y;
             data[offset + 14] = tri.n0.z;
-            data[offset + 15] = tri.materialID;
+            data[offset + 15] = 0;
+
+            data[offset + 16] = tri.n1.x;
+            data[offset + 17] = tri.n1.y;
+            data[offset + 18] = tri.n1.z;
+            data[offset + 19] = 0;
+
+            data[offset + 20] = tri.n2.x;
+            data[offset + 21] = tri.n2.y;
+            data[offset + 22] = tri.n2.z;
+            data[offset + 23] = 0;
+
+            data[offset + 24] = tri.uv0.x;
+            data[offset + 25] = tri.uv0.y;
+            data[offset + 26] = tri.uv1.x;
+            data[offset + 27] = tri.uv1.y;
+
+            data[offset + 28] = tri.materialID;
+            data[offset + 29] = 0;
+            data[offset + 30] = 0;
+            data[offset + 31] = 0;
         }
 
         buffer.unmap();
@@ -970,32 +990,44 @@ export class SceneManager {
             this.gpuResources.lightBuffer.destroy();
         }
 
-        const size = this.lights.length * LIGHT_SIZE;
+        const lightCount = Math.max(1, this.lights.length);
+        const size = lightCount * LIGHT_SIZE;
         const buffer = this.device.createBuffer({
-            size: Math.max(size, LIGHT_SIZE),
+            size,
             usage: BUFFER_USAGE_STORAGE,
             mappedAtCreation: true,
         });
 
         const data = new Float32Array(buffer.getMappedRange());
+        const dataU32 = data as unknown as Uint32Array;
         for (let i = 0; i < this.lights.length; i++) {
             const light = this.lights[i];
-            const offset = i * 12;
+            const offset = i * (LIGHT_SIZE / 4);
 
-            data[offset] = light.type;
-            data[offset + 1] = light.position.x;
-            data[offset + 2] = light.position.y;
-            data[offset + 3] = light.position.z;
+            dataU32[offset + 0] = light.type;
+            dataU32[offset + 1] = 0;
+            dataU32[offset + 2] = 0;
+            dataU32[offset + 3] = 0;
 
-            data[offset + 4] = light.direction.x;
-            data[offset + 5] = light.direction.y;
-            data[offset + 6] = light.direction.z;
-            data[offset + 7] = light.color.x;
+            data[offset + 4] = light.position.x;
+            data[offset + 5] = light.position.y;
+            data[offset + 6] = light.position.z;
+            data[offset + 7] = 0;
 
-            data[offset + 8] = light.color.y;
-            data[offset + 9] = light.color.z;
-            data[offset + 10] = light.intensity;
-            data[offset + 11] = light.radius;
+            data[offset + 8] = light.direction.x;
+            data[offset + 9] = light.direction.y;
+            data[offset + 10] = light.direction.z;
+            data[offset + 11] = 0;
+
+            data[offset + 12] = light.color.x;
+            data[offset + 13] = light.color.y;
+            data[offset + 14] = light.color.z;
+            data[offset + 15] = light.intensity;
+
+            data[offset + 16] = light.radius;
+            data[offset + 17] = light.innerConeAngle;
+            data[offset + 18] = light.outerConeAngle;
+            data[offset + 19] = 0;
         }
 
         buffer.unmap();
@@ -1019,19 +1051,29 @@ export class SceneManager {
         });
 
         const data = new Float32Array(buffer.getMappedRange());
+        const dataU32 = data as unknown as Uint32Array;
         for (let i = 0; i < this.bvhNodes.length; i++) {
             const node = this.bvhNodes[i];
-            const offset = i * 8;
+            const offset = i * (BVH_NODE_SIZE / 4);
 
-            data[offset] = node.boundsMin.x;
+            data[offset + 0] = node.boundsMin.x;
             data[offset + 1] = node.boundsMin.y;
             data[offset + 2] = node.boundsMin.z;
-            data[offset + 3] = node.leftChild;
+            dataU32[offset + 3] = node.leftChild;
 
             data[offset + 4] = node.boundsMax.x;
             data[offset + 5] = node.boundsMax.y;
             data[offset + 6] = node.boundsMax.z;
-            data[offset + 7] = node.triangleCount > 0 ? node.triangleStart : node.rightChild;
+            dataU32[offset + 7] = node.rightChild;
+
+            dataU32[offset + 8] = node.triangleCount;
+            dataU32[offset + 9] = node.triangleStart;
+            dataU32[offset + 10] = 0;
+            dataU32[offset + 11] = 0;
+            dataU32[offset + 12] = 0;
+            dataU32[offset + 13] = 0;
+            dataU32[offset + 14] = 0;
+            dataU32[offset + 15] = 0;
         }
 
         buffer.unmap();

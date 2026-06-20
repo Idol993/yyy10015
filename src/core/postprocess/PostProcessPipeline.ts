@@ -4,6 +4,37 @@ import bloomShader from './Bloom.wgsl?raw';
 import dofShader from './DOF.wgsl?raw';
 import tonemapShader from './Tonemap.wgsl?raw';
 
+const TONEMAP_ENTRY = /* wgsl */ `
+@group(0) @binding(2) var outputLDR: texture_storage_2d<FORMAT_PLACEHOLDER, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= params.width || id.y >= params.height) {
+        return;
+    }
+
+    let texCoord = vec2<i32>(id.xy);
+    var color = textureLoad(inputHDR, texCoord, 0).rgb;
+
+    color *= params.exposure;
+
+    var tonemapped: vec3<f32>;
+    if (params.tonemapType == 1u) {
+        tonemapped = acesTonemap(color);
+    } else if (params.tonemapType == 2u) {
+        tonemapped = reinhardTonemap(color);
+    } else if (params.tonemapType == 3u) {
+        tonemapped = filmicTonemap(color);
+    } else {
+        tonemapped = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+
+    let srgb = linearToSRGB(clamp(tonemapped, vec3<f32>(0.0), vec3<f32>(1.0)));
+
+    textureStore(outputLDR, texCoord, vec4<f32>(srgb, 1.0));
+}
+`;
+
 const BLOOM_MIP_LEVELS = 6;
 const WORKGROUP_SIZE = 8;
 
@@ -27,13 +58,15 @@ export class PostProcessPipeline {
     bloomMipViews: GPUTextureView[] = [];
 
     pipelines: {
-        tonemap: ComputePipeline | null;
+        tonemapHDR: ComputePipeline | null;
+        tonemapFinal: ComputePipeline | null;
         bloomDownsample: ComputePipeline | null;
         bloomUpsample: ComputePipeline | null;
         bloomApply: ComputePipeline | null;
         dof: ComputePipeline | null;
     } = {
-        tonemap: null,
+        tonemapHDR: null,
+        tonemapFinal: null,
         bloomDownsample: null,
         bloomUpsample: null,
         bloomApply: null,
@@ -41,11 +74,13 @@ export class PostProcessPipeline {
     };
 
     bindGroupLayouts: {
-        tonemap: GPUBindGroupLayout | null;
+        tonemapHDR: GPUBindGroupLayout | null;
+        tonemapFinal: GPUBindGroupLayout | null;
         bloom: GPUBindGroupLayout | null;
         dof: GPUBindGroupLayout | null;
     } = {
-        tonemap: null,
+        tonemapHDR: null,
+        tonemapFinal: null,
         bloom: null,
         dof: null,
     };
@@ -60,7 +95,7 @@ export class PostProcessPipeline {
         this.device = device;
     }
 
-    createPipelines(): void {
+    createPipelines(swapChainFormat: GPUTextureFormat = 'bgra8unorm'): void {
         if (this.pipelinesCreated) return;
 
         this.sampler = this.device.createSampler({
@@ -77,55 +112,44 @@ export class PostProcessPipeline {
             label: 'PostProcessUniformBuffer',
         });
 
-        this.createTonemapPipeline();
+        this.createTonemapPipeline('tonemapHDR', 'rgba16float');
+        this.createTonemapPipeline('tonemapFinal', swapChainFormat);
         this.createBloomPipelines();
         this.createDOFPipeline();
 
         this.pipelinesCreated = true;
     }
 
-    private createTonemapPipeline(): void {
+    private createTonemapPipeline(key: 'tonemapHDR' | 'tonemapFinal', format: GPUTextureFormat): void {
+        const code = tonemapShader + TONEMAP_ENTRY.replace('FORMAT_PLACEHOLDER', format);
+
         const layout = this.device.createBindGroupLayout({
-            label: 'TonemapBindGroupLayout',
+            label: `TonemapBGL_${key}`,
             entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.COMPUTE,
-                    buffer: { type: 'uniform' },
-                },
-                {
-                    binding: 1,
-                    visibility: GPUShaderStage.COMPUTE,
-                    texture: { sampleType: 'float' },
-                },
-                {
-                    binding: 2,
-                    visibility: GPUShaderStage.COMPUTE,
-                    storageTexture: { format: 'rgba8unorm', access: 'write-only' },
-                },
+                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { format, access: 'write-only' } },
             ],
         });
 
-        this.bindGroupLayouts.tonemap = layout;
+        const bindGroupLayoutKey = key === 'tonemapHDR' ? 'tonemapHDR' : 'tonemapFinal';
+        (this.bindGroupLayouts as any)[bindGroupLayoutKey] = layout;
 
         const pipelineLayout = this.device.createPipelineLayout({
-            label: 'TonemapPipelineLayout',
+            label: `TonemapPL_${key}`,
             bindGroupLayouts: [layout],
         });
 
         const shaderModule = this.device.createShaderModule({
-            label: 'TonemapShader',
-            code: tonemapShader,
+            label: `TonemapShader_${key}`,
+            code,
         });
 
-        this.pipelines.tonemap = {
+        (this.pipelines as any)[key] = {
             pipeline: this.device.createComputePipeline({
-                label: 'TonemapPipeline',
+                label: `TonemapPipeline_${key}`,
                 layout: pipelineLayout,
-                compute: {
-                    module: shaderModule,
-                    entryPoint: 'main',
-                },
+                compute: { module: shaderModule, entryPoint: 'main' },
             }),
             bindGroupLayout: layout,
         };
@@ -135,31 +159,11 @@ export class PostProcessPipeline {
         const layout = this.device.createBindGroupLayout({
             label: 'BloomBindGroupLayout',
             entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.COMPUTE,
-                    buffer: { type: 'uniform' },
-                },
-                {
-                    binding: 1,
-                    visibility: GPUShaderStage.COMPUTE,
-                    texture: { sampleType: 'float' },
-                },
-                {
-                    binding: 2,
-                    visibility: GPUShaderStage.COMPUTE,
-                    storageTexture: { format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat, access: 'write-only' },
-                },
-                {
-                    binding: 3,
-                    visibility: GPUShaderStage.COMPUTE,
-                    sampler: { type: 'filtering' },
-                },
-                {
-                    binding: 4,
-                    visibility: GPUShaderStage.COMPUTE,
-                    texture: { sampleType: 'float' },
-                },
+                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat, access: 'write-only' } },
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+                { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
             ],
         });
 
@@ -179,10 +183,7 @@ export class PostProcessPipeline {
             pipeline: this.device.createComputePipeline({
                 label: 'BloomDownsamplePipeline',
                 layout: pipelineLayout,
-                compute: {
-                    module: shaderModule,
-                    entryPoint: 'bloomDownsample',
-                },
+                compute: { module: shaderModule, entryPoint: 'bloomDownsample' },
             }),
             bindGroupLayout: layout,
         };
@@ -191,10 +192,7 @@ export class PostProcessPipeline {
             pipeline: this.device.createComputePipeline({
                 label: 'BloomUpsamplePipeline',
                 layout: pipelineLayout,
-                compute: {
-                    module: shaderModule,
-                    entryPoint: 'bloomUpsample',
-                },
+                compute: { module: shaderModule, entryPoint: 'bloomUpsample' },
             }),
             bindGroupLayout: layout,
         };
@@ -203,10 +201,7 @@ export class PostProcessPipeline {
             pipeline: this.device.createComputePipeline({
                 label: 'BloomApplyPipeline',
                 layout: pipelineLayout,
-                compute: {
-                    module: shaderModule,
-                    entryPoint: 'bloomApply',
-                },
+                compute: { module: shaderModule, entryPoint: 'bloomApply' },
             }),
             bindGroupLayout: layout,
         };
@@ -216,26 +211,10 @@ export class PostProcessPipeline {
         const layout = this.device.createBindGroupLayout({
             label: 'DOFBindGroupLayout',
             entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.COMPUTE,
-                    buffer: { type: 'uniform' },
-                },
-                {
-                    binding: 1,
-                    visibility: GPUShaderStage.COMPUTE,
-                    texture: { sampleType: 'float' },
-                },
-                {
-                    binding: 2,
-                    visibility: GPUShaderStage.COMPUTE,
-                    texture: { sampleType: 'unfilterable-float' },
-                },
-                {
-                    binding: 3,
-                    visibility: GPUShaderStage.COMPUTE,
-                    storageTexture: { format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat, access: 'write-only' },
-                },
+                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat, access: 'write-only' } },
             ],
         });
 
@@ -255,10 +234,7 @@ export class PostProcessPipeline {
             pipeline: this.device.createComputePipeline({
                 label: 'DOFPipeline',
                 layout: pipelineLayout,
-                compute: {
-                    module: shaderModule,
-                    entryPoint: 'main',
-                },
+                compute: { module: shaderModule, entryPoint: 'main' },
             }),
             bindGroupLayout: layout,
         };
@@ -279,12 +255,7 @@ export class PostProcessPipeline {
             });
 
             const view = texture.createView();
-            this.bloomMipTextures.push({
-                texture,
-                view,
-                width: currentWidth,
-                height: currentHeight,
-            });
+            this.bloomMipTextures.push({ texture, view, width: currentWidth, height: currentHeight });
             this.bloomMipViews.push(view);
 
             currentWidth = Math.max(1, Math.floor(currentWidth / 2));
@@ -344,16 +315,30 @@ export class PostProcessPipeline {
             this.dispatchBloomUpsample(encoder);
             this.dispatchBloomApply(encoder, currentHDRView, bloomCombinedView, settings);
 
-            this.dispatchTonemap(encoder, bloomCombinedView, outputView);
+            this.dispatchTonemap(encoder, bloomCombinedView, outputView, false);
 
             bloomCombined.destroy();
         } else {
-            this.dispatchTonemap(encoder, currentHDRView, outputView);
+            this.dispatchTonemap(encoder, currentHDRView, outputView, false);
         }
 
         if (dofTempTexture) {
             dofTempTexture.destroy();
         }
+    }
+
+    finalizeToSwapChain(
+        encoder: GPUCommandEncoder,
+        hdrView: GPUTextureView,
+        swapChainView: GPUTextureView,
+        camera: CameraParams,
+        settings: RenderSettings
+    ): void {
+        if (!this.pipelinesCreated) {
+            this.createPipelines();
+        }
+        this.updateUniformBuffer(camera, settings);
+        this.dispatchTonemap(encoder, hdrView, swapChainView, true);
     }
 
     private updateUniformBuffer(camera: CameraParams, settings: RenderSettings): void {
@@ -555,12 +540,16 @@ export class PostProcessPipeline {
     private dispatchTonemap(
         encoder: GPUCommandEncoder,
         inputView: GPUTextureView,
-        outputView: GPUTextureView
+        outputView: GPUTextureView,
+        isFinal: boolean
     ): void {
-        if (!this.pipelines.tonemap || !this.bindGroupLayouts.tonemap || !this.uniformBuffer) return;
+        const key = isFinal ? 'tonemapFinal' : 'tonemapHDR';
+        const pipelineEntry = (this.pipelines as any)[key] as ComputePipeline | null;
+        const bglEntry = (this.bindGroupLayouts as any)[key] as GPUBindGroupLayout | null;
+        if (!pipelineEntry || !bglEntry || !this.uniformBuffer) return;
 
         const bindGroup = this.device.createBindGroup({
-            layout: this.bindGroupLayouts.tonemap,
+            layout: bglEntry,
             entries: [
                 { binding: 0, resource: { buffer: this.uniformBuffer } },
                 { binding: 1, resource: inputView },
@@ -568,8 +557,8 @@ export class PostProcessPipeline {
             ],
         });
 
-        const pass = encoder.beginComputePass({ label: 'TonemapPass' });
-        pass.setPipeline(this.pipelines.tonemap.pipeline);
+        const pass = encoder.beginComputePass({ label: `TonemapPass_${key}` });
+        pass.setPipeline(pipelineEntry.pipeline);
         pass.setBindGroup(0, bindGroup);
         pass.dispatchWorkgroups(
             Math.ceil(this.width / WORKGROUP_SIZE),
@@ -600,7 +589,8 @@ export class PostProcessPipeline {
         this.sampler = null;
 
         this.pipelines = {
-            tonemap: null,
+            tonemapHDR: null,
+            tonemapFinal: null,
             bloomDownsample: null,
             bloomUpsample: null,
             bloomApply: null,
@@ -608,7 +598,8 @@ export class PostProcessPipeline {
         };
 
         this.bindGroupLayouts = {
-            tonemap: null,
+            tonemapHDR: null,
+            tonemapFinal: null,
             bloom: null,
             dof: null,
         };

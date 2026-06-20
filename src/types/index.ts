@@ -117,13 +117,13 @@ export interface LightData {
     outerConeAngle: number;
 }
 
-export const TRIANGLE_SIZE = 16 * 4;
-export const BVH_NODE_SIZE = 8 * 4;
-export const MATERIAL_SIZE = 16 * 4;
+export const TRIANGLE_SIZE = 32 * 4;
+export const BVH_NODE_SIZE = 16 * 4;
+export const MATERIAL_SIZE = 20 * 4;
 export const INSTANCE_SIZE = 16 * 4 * 2 + 8;
 export const CAMERA_SIZE = 12 * 4;
 export const RENDER_SETTINGS_SIZE = 16 * 4;
-export const LIGHT_SIZE = 12 * 4;
+export const LIGHT_SIZE = 20 * 4;
 
 export const TEXTURE_FORMAT_RGBA8 = 'rgba8unorm';
 export const TEXTURE_FORMAT_RGBA16F = 'rgba16float';

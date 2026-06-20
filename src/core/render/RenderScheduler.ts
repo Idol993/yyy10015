@@ -10,6 +10,8 @@ export interface RenderPassResources {
     historyView: GPUTextureView | null;
     outputTexture: GPUTexture | null;
     outputView: GPUTextureView | null;
+    hdrIntermediateTexture: GPUTexture | null;
+    hdrIntermediateView: GPUTextureView | null;
 }
 
 export interface RenderSchedulerDeps {
@@ -28,6 +30,7 @@ export interface RenderSchedulerDeps {
     };
     postProcessPipeline: {
         process(encoder: GPUCommandEncoder, inputView: GPUTextureView, outputView: GPUTextureView, camera: CameraParams, settings: RenderSettings): void;
+        finalizeToSwapChain(encoder: GPUCommandEncoder, hdrView: GPUTextureView, swapChainView: GPUTextureView, camera: CameraParams, settings: RenderSettings): void;
     };
 }
 
@@ -53,6 +56,8 @@ export class RenderScheduler {
         historyView: null,
         outputTexture: null,
         outputView: null,
+        hdrIntermediateTexture: null,
+        hdrIntermediateView: null,
     };
 
     private sceneData: SceneData | null = null;
@@ -126,6 +131,14 @@ export class RenderScheduler {
             usage: TEXTURE_USAGE_STORAGE,
         });
         this.resources.outputView = this.resources.outputTexture.createView();
+
+        this.resources.hdrIntermediateTexture = this.device.createTexture({
+            label: 'HDRIntermediateTarget',
+            size: [w, h],
+            format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat,
+            usage: TEXTURE_USAGE_STORAGE,
+        });
+        this.resources.hdrIntermediateView = this.resources.hdrIntermediateTexture.createView();
     }
 
     private destroyResources(): void {
@@ -134,8 +147,9 @@ export class RenderScheduler {
         r.depthTexture?.destroy();
         r.historyTexture?.destroy();
         r.outputTexture?.destroy();
-        r.colorTexture = r.depthTexture = r.historyTexture = r.outputTexture = null;
-        r.colorView = r.depthView = r.historyView = r.outputView = null;
+        r.hdrIntermediateTexture?.destroy();
+        r.colorTexture = r.depthTexture = r.historyTexture = r.outputTexture = r.hdrIntermediateTexture = null;
+        r.colorView = r.depthView = r.historyView = r.outputView = r.hdrIntermediateView = null;
     }
 
     render(camera: CameraParams, settings: RenderSettings): void {
@@ -182,14 +196,17 @@ export class RenderScheduler {
 
         this.profiler.beginPass(encoder, PassName.TONEMAP);
         const postInput = settings.enableDenoiser ? this.resources.outputView! : this.resources.colorView!;
-        this.postProcessPipeline.process(encoder, postInput, this.resources.outputView!, camera, settings);
+        this.postProcessPipeline.process(encoder, postInput, this.resources.hdrIntermediateView!, camera, settings);
         this.profiler.endPass(encoder, PassName.TONEMAP);
 
         const swapChainTexture = this.context.getCurrentTexture();
-        encoder.copyTextureToTexture(
-            { texture: this.resources.outputTexture! },
-            { texture: swapChainTexture },
-            [this.width, this.height]
+        const swapChainView = swapChainTexture.createView();
+        this.postProcessPipeline.finalizeToSwapChain(
+            encoder,
+            this.resources.hdrIntermediateView!,
+            swapChainView,
+            camera,
+            settings
         );
 
         this.profiler.endFrame(encoder);

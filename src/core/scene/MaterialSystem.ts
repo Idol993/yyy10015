@@ -1,4 +1,4 @@
-import { PBRMaterial, ALPHA_MODE_OPAQUE, ALPHA_MODE_MASK, ALPHA_MODE_BLEND, MATERIAL_FLAG_HAS_BASE_COLOR_TEXTURE, MATERIAL_FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE, MATERIAL_FLAG_HAS_NORMAL_TEXTURE, MATERIAL_FLAG_HAS_OCCLUSION_TEXTURE, MATERIAL_FLAG_HAS_EMISSIVE_TEXTURE, MATERIAL_FLAG_HAS_CLEARCOAT_TEXTURE, MATERIAL_FLAG_TRANSMISSION, MATERIAL_FLAG_DOUBLE_SIDED } from '@/types';
+import { PBRMaterial, ALPHA_MODE_OPAQUE, ALPHA_MODE_MASK, ALPHA_MODE_BLEND, MATERIAL_FLAG_HAS_BASE_COLOR_TEXTURE, MATERIAL_FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE, MATERIAL_FLAG_HAS_NORMAL_TEXTURE, MATERIAL_FLAG_HAS_OCCLUSION_TEXTURE, MATERIAL_FLAG_HAS_EMISSIVE_TEXTURE, MATERIAL_FLAG_HAS_CLEARCOAT_TEXTURE, MATERIAL_FLAG_TRANSMISSION, MATERIAL_FLAG_DOUBLE_SIDED, MATERIAL_SIZE } from '@/types';
 
 export interface MaterialTextureSet {
     baseColorTexture: number;
@@ -287,7 +287,8 @@ export class MaterialSystem {
         const mat = this.getMaterial(materialIndex);
         if (!mat) return null;
 
-        const data = new Float32Array(16);
+        const data = new Float32Array(MATERIAL_SIZE / 4);
+        const dataU32 = data as unknown as Uint32Array;
 
         data[0] = mat.baseColor.x;
         data[1] = mat.baseColor.y;
@@ -296,18 +297,23 @@ export class MaterialSystem {
 
         data[4] = mat.metallic;
         data[5] = mat.roughness;
-        data[6] = mat.baseColorTexture;
-        data[7] = mat.metallicRoughnessTexture;
 
-        data[8] = mat.normalTexture;
-        data[9] = mat.occlusionTexture;
-        data[10] = mat.emissiveTexture;
-        data[11] = mat.clearcoatTexture;
+        data[6] = mat.emissive.x;
+        data[7] = mat.emissive.y;
+        data[8] = mat.emissive.z;
 
-        data[12] = mat.emissive.x;
-        data[13] = mat.emissive.y;
-        data[14] = mat.emissive.z;
-        data[15] = mat.clearcoat;
+        data[9] = mat.clearcoat;
+        data[10] = mat.clearcoatRoughness;
+        data[11] = mat.transmission;
+        data[12] = mat.ior;
+        data[13] = mat.thickness;
+        data[14] = mat.subsurface;
+        data[15] = mat.alphaCutoff;
+
+        dataU32[16] = this.getMaterialFlags(materialIndex);
+        data[17] = 0;
+        data[18] = 0;
+        data[19] = 0;
 
         return data;
     }
@@ -363,12 +369,13 @@ export class MaterialSystem {
 
     getAllGPUData(): Float32Array {
         const count = this.materials.length;
-        const data = new Float32Array(count * 16);
+        const floatsPerMat = MATERIAL_SIZE / 4;
+        const data = new Float32Array(count * floatsPerMat);
 
         for (let i = 0; i < count; i++) {
             const matData = this.toGPUData(i);
             if (matData) {
-                data.set(matData, i * 16);
+                data.set(matData, i * floatsPerMat);
             }
         }
 
@@ -377,12 +384,13 @@ export class MaterialSystem {
 
     getAllGPUDataExtended(): Float32Array {
         const count = this.materials.length;
-        const data = new Float32Array(count * 32);
+        const floatsPerMat = MATERIAL_SIZE / 4;
+        const data = new Float32Array(count * floatsPerMat);
 
         for (let i = 0; i < count; i++) {
-            const matData = this.toGPUDataExtended(i);
+            const matData = this.toGPUData(i);
             if (matData) {
-                data.set(matData, i * 32);
+                data.set(matData, i * floatsPerMat);
             }
         }
 

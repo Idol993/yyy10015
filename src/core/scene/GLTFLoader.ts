@@ -1175,7 +1175,7 @@ export class GLTFLoader {
                 const materialIdx = primitive.material;
                 const material = materials[materialIdx] ?? materials[0];
 
-                this.triangulatePrimitive(primitive, node.worldMatrix, material, triangles);
+                this.triangulatePrimitive(primitive, node.worldMatrix, material, materialIdx, triangles);
             }
         }
     }
@@ -1184,6 +1184,7 @@ export class GLTFLoader {
         primitive: ParsedPrimitive,
         transform: mat4,
         material: PBRMaterial,
+        materialID: number,
         triangles: TriangleData[]
     ): void {
         const positions = primitive.attributes.POSITION;
@@ -1193,8 +1194,6 @@ export class GLTFLoader {
         const texCoords1 = primitive.attributes.TEXCOORD_1;
         const colors = primitive.attributes.COLOR_0;
         const indices = primitive.indices;
-
-        const materialID = 0;
 
         const generateNormals = !normals;
         const computedNormals = generateNormals ? new Float32Array(positions.length) : null;
@@ -1232,17 +1231,17 @@ export class GLTFLoader {
             const uv0 = this.getUV(texCoords0, i0, i1, i2);
             const uv1 = this.getUV(texCoords1, i0, i1, i2);
 
+            let triBaseColor = material.baseColor;
             if (colors) {
                 const c0 = this.getColor(colors, i0);
                 const c1 = this.getColor(colors, i1);
                 const c2 = this.getColor(colors, i2);
-
-                material.baseColor.x = (c0[0] + c1[0] + c2[0]) / 3;
-                material.baseColor.y = (c0[1] + c1[1] + c2[1]) / 3;
-                material.baseColor.z = (c0[2] + c1[2] + c2[2]) / 3;
-                if (c0.length > 3) {
-                    material.baseColor.w = (c0[3] + c1[3] + c2[3]) / 3;
-                }
+                triBaseColor = {
+                    x: (c0[0] + c1[0] + c2[0]) / 3,
+                    y: (c0[1] + c1[1] + c2[1]) / 3,
+                    z: (c0[2] + c1[2] + c2[2]) / 3,
+                    w: c0.length > 3 ? (c0[3] + c1[3] + c2[3]) / 3 : 1,
+                };
             }
 
             triangles.push({
@@ -1255,7 +1254,8 @@ export class GLTFLoader {
                 uv0: { x: uv0[0][0], y: uv0[0][1] },
                 uv1: { x: uv0[1][0], y: uv0[1][1] },
                 materialID,
-            });
+                _baseColor: triBaseColor,
+            } as TriangleData & { _baseColor?: typeof triBaseColor });
         }
     }
 

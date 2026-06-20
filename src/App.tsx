@@ -7,58 +7,59 @@ import SceneLoader from '@/components/SceneLoader';
 import { DeviceManager } from '@/core/webgpu/DeviceManager';
 import { SceneManager } from '@/core/scene/SceneManager';
 import { FreeCameraController } from '@/core/camera/FreeCameraController';
-import { RenderScheduler } from '@/core/render/RenderScheduler';
+import { RenderScheduler, RenderSchedulerDeps } from '@/core/render/RenderScheduler';
 import { PostProcessPipeline } from '@/core/postprocess/PostProcessPipeline';
+import { PathTracer } from '@/core/pathtracer/PathTracer';
+import { BVHBuilder } from '@/core/bvh/BVHBuilder';
+import { SimpleDenoiser } from '@/core/denoiser/SimpleDenoiser';
 import { useRendererStore } from '@/store/useRendererStore';
 import { createCornellBox } from '@/store/createDefaultScenes';
-import type { SceneData, CameraParams, RenderSettings } from '@/types';
+import type { SceneData, CameraParams, RenderSettings, vec3 } from '@/types';
 
-interface PathTracerStub {
-    render(encoder: GPUCommandEncoder, colorView: GPUTextureView, historyView: GPUTextureView, camera: CameraParams, settings: any, sceneData: SceneData): void;
+interface PathTracerAdapter {
+    render(encoder: GPUCommandEncoder, colorView: GPUTextureView, historyView: GPUTextureView, camera: CameraParams, settings: RenderSettings, sceneData: SceneData): void;
     resetAccumulation(): void;
+    setBVHBuffer(buffer: GPUBuffer | null): void;
 }
 
-interface BVHBuilderStub {
-    needsRebuild(): boolean;
-    build(encoder: GPUCommandEncoder, sceneData: SceneData): void;
-    markRebuilt(): void;
+interface CameraState {
+    posX: number;
+    posY: number;
+    posZ: number;
+    dirX: number;
+    dirY: number;
+    dirZ: number;
+    fov: number;
+    focalDistance: number;
+    aperture: number;
 }
 
-interface DenoiserAdapter {
-    denoise(encoder: GPUCommandEncoder, colorView: GPUTextureView, outputView: GPUTextureView, settings: RenderSettings): void;
+const EPSILON = 1e-6;
+
+function approxEqual(a: number, b: number, eps: number = EPSILON): boolean {
+    return Math.abs(a - b) < eps;
 }
 
-function createPathTracer(): PathTracerStub {
-    return {
-        render() {},
-        resetAccumulation() {},
-    };
-}
-
-function createBVHBuilder(sceneManager: SceneManager): BVHBuilderStub {
-    let needsRebuildFlag = true;
-    return {
-        needsRebuild: () => needsRebuildFlag,
-        build() {
-            sceneManager.buildBVH();
-            sceneManager.uploadToGPU();
-            needsRebuildFlag = false;
-        },
-        markRebuilt: () => { needsRebuildFlag = true; },
-    };
-}
-
-function createDenoiser(): DenoiserAdapter {
-    return {
-        denoise(encoder, colorView, outputView) {
-        },
-    };
+function cameraChanged(prev: CameraState | null, current: CameraState): boolean {
+    if (!prev) return true;
+    return (
+        !approxEqual(prev.posX, current.posX) ||
+        !approxEqual(prev.posY, current.posY) ||
+        !approxEqual(prev.posZ, current.posZ) ||
+        !approxEqual(prev.dirX, current.dirX) ||
+        !approxEqual(prev.dirY, current.dirY) ||
+        !approxEqual(prev.dirZ, current.dirZ) ||
+        !approxEqual(prev.fov, current.fov, 1e-5) ||
+        !approxEqual(prev.focalDistance, current.focalDistance, 1e-4) ||
+        !approxEqual(prev.aperture, current.aperture, 1e-6)
+    );
 }
 
 export default function App() {
     const isLoading = useRendererStore((s) => s.isLoading);
     const error = useRendererStore((s) => s.error);
     const renderSettings = useRendererStore((s) => s.renderSettings);
+    const cameraParamsFromStore = useRendererStore((s) => s.cameraParams);
     const setInitialized = useRendererStore((s) => s.setInitialized);
     const setLoading = useRendererStore((s) => s.setLoading);
     const setError = useRendererStore((s) => s.setError);
@@ -70,14 +71,21 @@ export default function App() {
     const schedulerRef = useRef<RenderScheduler | null>(null);
     const sceneManagerRef = useRef<SceneManager | null>(null);
     const cameraRef = useRef<FreeCameraController | null>(null);
+    const pathTracerRef = useRef<PathTracer | null>(null);
+    const bvhBuilderRef = useRef<BVHBuilder | null>(null);
+    const denoiserRef = useRef<SimpleDenoiser | null>(null);
     const animationRef = useRef<number>(0);
     const lastTimeRef = useRef<number>(0);
     const webgpuSupportedRef = useRef(true);
+    const prevCameraStateRef = useRef<CameraState | null>(null);
+    const lastStoreCamStateRef = useRef<{ fov: number; focalDistance: number; aperture: number } | null>(null);
     const [, forceUpdate] = useState(0);
 
     const handleCanvasReady = useCallback(async (canvas: HTMLCanvasElement) => {
         try {
-            const device = DeviceManager.getInstance().getDevice();
+            const deviceManager = DeviceManager.getInstance();
+            await deviceManager.initialize();
+            const device = deviceManager.getDevice();
             deviceRef.current = device;
 
             const camera = new FreeCameraController();
@@ -86,28 +94,80 @@ export default function App() {
             const sceneManager = new SceneManager(device);
             sceneManagerRef.current = sceneManager;
 
+            const sceneData = createCornellBox();
+            sceneManager.setSceneData(sceneData);
+            sceneManager.uploadToGPU();
+
+            const pathTracer = new PathTracer(device);
+            pathTracer.resize(canvas.width, canvas.height);
+            pathTracerRef.current = pathTracer;
+
+            const bvhBuilder = new BVHBuilder(device);
+            bvhBuilderRef.current = bvhBuilder;
+
             const postProcessPipeline = new PostProcessPipeline(device);
             postProcessPipeline.resize(canvas.width, canvas.height);
             postProcessPipeline.createPipelines();
 
-            const denoiser = createDenoiser();
-            const pathTracer = createPathTracer();
-            const bvhBuilder = createBVHBuilder(sceneManager);
+            const denoiser = new SimpleDenoiser(device);
+            denoiser.resize(canvas.width, canvas.height);
+            denoiserRef.current = denoiser;
+
+            const pathTracerAdapter: PathTracerAdapter = {
+                render(
+                    encoder: GPUCommandEncoder,
+                    colorView: GPUTextureView,
+                    historyView: GPUTextureView,
+                    camParams: CameraParams,
+                    settings: RenderSettings,
+                    sData: SceneData,
+                ): void {
+                    pathTracer.render(encoder, colorView, historyView, camParams, settings, sData);
+                },
+                resetAccumulation(): void {
+                    pathTracer.resetAccumulation();
+                },
+                setBVHBuffer(buffer: GPUBuffer | null): void {
+                    pathTracer.setBVHBuffer(buffer);
+                },
+            };
+
+            const bvhBuilderAdapter: RenderSchedulerDeps['bvhBuilder'] = {
+                needsRebuild(): boolean {
+                    return bvhBuilder.needsRebuild();
+                },
+                build(encoder: GPUCommandEncoder, sData: SceneData): void {
+                    bvhBuilder.build(encoder, sData);
+                    const bvhBuffer = bvhBuilder.getBVHBuffer();
+                    pathTracerAdapter.setBVHBuffer(bvhBuffer);
+                },
+                markRebuilt(): void {
+                    bvhBuilder.markRebuilt();
+                },
+            };
+
+            const denoiserAdapter: RenderSchedulerDeps['denoiser'] = {
+                denoise(
+                    encoder: GPUCommandEncoder,
+                    colorView: GPUTextureView,
+                    outputView: GPUTextureView,
+                    settings: RenderSettings,
+                ): void {
+                    denoiser.denoise(encoder, colorView, outputView, settings);
+                },
+            };
 
             const scheduler = new RenderScheduler({
                 device,
-                pathTracer,
-                bvhBuilder,
-                denoiser,
+                pathTracer: pathTracerAdapter,
+                bvhBuilder: bvhBuilderAdapter,
+                denoiser: denoiserAdapter,
                 postProcessPipeline,
             });
 
             scheduler.initialize(canvas);
             schedulerRef.current = scheduler;
 
-            const sceneData = createCornellBox();
-            sceneManager.setSceneData(sceneData);
-            sceneManager.uploadToGPU();
             scheduler.setScene(sceneManager.getSceneData());
 
             updateSceneInfo({
@@ -165,6 +225,8 @@ export default function App() {
                     focalDistance: defaultCam.focalDistance,
                     aperture: defaultCam.aperture,
                 });
+
+                prevCameraStateRef.current = null;
             }
 
             updateSceneInfo({
@@ -183,6 +245,7 @@ export default function App() {
         const camera = cameraRef.current;
         const scheduler = schedulerRef.current;
         const device = deviceRef.current;
+        const pathTracer = pathTracerRef.current;
 
         if (camera && scheduler && device) {
             const input = (window as any).__renderInput;
@@ -205,6 +268,26 @@ export default function App() {
             const camDir = camera.getDirection();
             const camUp = camera.getUp();
 
+            const currentCameraState: CameraState = {
+                posX: camPos[0],
+                posY: camPos[1],
+                posZ: camPos[2],
+                dirX: camDir[0],
+                dirY: camDir[1],
+                dirZ: camDir[2],
+                fov: camera.fov,
+                focalDistance: camera.focalDistance,
+                aperture: camera.aperture,
+            };
+
+            if (cameraChanged(prevCameraStateRef.current, currentCameraState)) {
+                if (pathTracer) {
+                    pathTracer.resetAccumulation();
+                }
+                scheduler.notifySettingsChanged();
+                prevCameraStateRef.current = currentCameraState;
+            }
+
             const cameraData: CameraParams = {
                 position: { x: camPos[0], y: camPos[1], z: camPos[2] },
                 direction: { x: camDir[0], y: camDir[1], z: camDir[2] },
@@ -222,7 +305,7 @@ export default function App() {
             const profiler = scheduler.getProfiler();
             const metrics = profiler.getMetrics();
             metrics.triangleCount = sceneManagerRef.current?.getTriangleCount() || 0;
-            metrics.bvhNodeCount = sceneManagerRef.current?.getBVHNodeCount() || 0;
+            metrics.bvhNodeCount = bvhBuilderRef.current?.getNodeCount() || 0;
             updateMetrics(metrics);
 
             updateCameraParams({
@@ -251,6 +334,43 @@ export default function App() {
             forceUpdate((n) => n + 1);
         }
     }, [setError]);
+
+    useEffect(() => {
+        const cam = cameraRef.current;
+        if (!cam) {
+            lastStoreCamStateRef.current = {
+                fov: cameraParamsFromStore.fov,
+                focalDistance: cameraParamsFromStore.focalDistance ?? 10,
+                aperture: cameraParamsFromStore.aperture ?? 0,
+            };
+            return;
+        }
+        const last = lastStoreCamStateRef.current;
+        const cur = {
+            fov: cameraParamsFromStore.fov,
+            focalDistance: cameraParamsFromStore.focalDistance ?? 10,
+            aperture: cameraParamsFromStore.aperture ?? 0,
+        };
+        let changed = false;
+        if (!last || !approxEqual(last.fov, cur.fov, 1e-5)) {
+            cam.fov = cur.fov;
+            changed = true;
+        }
+        if (!last || !approxEqual(last.focalDistance, cur.focalDistance, 1e-4)) {
+            cam.focalDistance = cur.focalDistance;
+            changed = true;
+        }
+        if (!last || !approxEqual(last.aperture, cur.aperture, 1e-6)) {
+            cam.aperture = cur.aperture;
+            changed = true;
+        }
+        if (changed) {
+            pathTracerRef.current?.resetAccumulation();
+            schedulerRef.current?.notifySettingsChanged();
+            prevCameraStateRef.current = null;
+        }
+        lastStoreCamStateRef.current = cur;
+    }, [cameraParamsFromStore.fov, cameraParamsFromStore.focalDistance, cameraParamsFromStore.aperture]);
 
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
     const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 720;
