@@ -254,6 +254,63 @@ export default function App() {
         }
     }, [updateCameraParams, updateSceneInfo]);
 
+    const handleGLTFFileSelected = useCallback(async (file: File) => {
+        const sceneManager = sceneManagerRef.current;
+        const scheduler = schedulerRef.current;
+        const setLoading = useRendererStore.getState().setLoading;
+        const setError = useRendererStore.getState().setError;
+        const updateInfo = useRendererStore.getState().updateSceneInfo;
+
+        if (!sceneManager || !scheduler) return;
+
+        setLoading(true);
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const blob = new Blob([arrayBuffer], {
+                type: file.name.endsWith('.glb') ? 'model/gltf-binary' : 'model/gltf+json',
+            });
+            const url = URL.createObjectURL(blob);
+
+            const loaded = await sceneManager.loadGLTF(url);
+            URL.revokeObjectURL(url);
+
+            sceneManager.uploadToGPU();
+            scheduler.setScene(sceneManager.getSceneData());
+
+            const camera = cameraRef.current;
+            if (camera) {
+                const defaultCam = sceneManager.getDefaultCamera(
+                    scheduler.getSize().width / scheduler.getSize().height
+                );
+                camera.setPosition(defaultCam.position.x, defaultCam.position.y, defaultCam.position.z);
+                camera.fov = defaultCam.fov;
+                camera.focalDistance = defaultCam.focalDistance;
+                camera.aperture = defaultCam.aperture;
+
+                updateCameraParams({
+                    position: { x: defaultCam.position.x, y: defaultCam.position.y, z: defaultCam.position.z },
+                    fov: defaultCam.fov,
+                    focalDistance: defaultCam.focalDistance,
+                    aperture: defaultCam.aperture,
+                });
+
+                prevCameraStateRef.current = null;
+            }
+
+            updateInfo({
+                triangleCount: loaded.sceneData.triangles.length,
+                materialCount: loaded.sceneData.materials.length,
+                instanceCount: loaded.sceneData.instances.length,
+                lightCount: loaded.sceneData.lights.length,
+            });
+        } catch (err) {
+            setError(err instanceof Error ? err.message : '加载 GLTF 文件失败');
+        } finally {
+            setLoading(false);
+        }
+    }, [updateCameraParams]);
+
     const renderLoop = useCallback((time: number) => {
         const dt = Math.min((time - lastTimeRef.current) / 1000, 0.1);
         lastTimeRef.current = time;
@@ -405,7 +462,7 @@ export default function App() {
                 <>
                     <PerformanceOverlay />
                     <ControlPanel />
-                    <SceneLoader onSceneLoaded={handleSceneLoaded} />
+                    <SceneLoader onSceneLoaded={handleSceneLoaded} onGLTFFileSelected={handleGLTFFileSelected} />
                 </>
             )}
 

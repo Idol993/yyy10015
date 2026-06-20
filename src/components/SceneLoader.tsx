@@ -6,6 +6,7 @@ import type { SceneData } from '@/types';
 
 interface SceneLoaderProps {
     onSceneLoaded: (sceneData: SceneData) => void;
+    onGLTFFileSelected?: (file: File) => void;
 }
 
 const presetScenes = [
@@ -14,7 +15,7 @@ const presetScenes = [
     { id: 'plane', name: '反射测试场', icon: Square, creator: createPlaneScene },
 ];
 
-export default function SceneLoader({ onSceneLoaded }: SceneLoaderProps) {
+export default function SceneLoader({ onSceneLoaded, onGLTFFileSelected }: SceneLoaderProps) {
     const [isLoading, setIsLoading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const setLoading = useRendererStore((s) => s.setLoading);
@@ -44,6 +45,18 @@ export default function SceneLoader({ onSceneLoaded }: SceneLoaderProps) {
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
+
+        if (onGLTFFileSelected) {
+            setIsLoading(true);
+            setLoading(true);
+            onGLTFFileSelected(file);
+            setIsLoading(false);
+            setLoading(false);
+            if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+            }
+            return;
+        }
 
         setIsLoading(true);
         setLoading(true);

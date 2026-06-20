@@ -324,19 +324,19 @@ export class GLTFLoader {
         const arrayBuffer = await response.arrayBuffer();
 
         if (this.isGLB(arrayBuffer)) {
-            return this.parseGLB(arrayBuffer);
+            return await this.parseGLB(arrayBuffer);
         } else {
             const jsonStr = new TextDecoder('utf-8').decode(arrayBuffer);
             this.gltf = JSON.parse(jsonStr);
             await this.loadBuffers(url);
-            return this.parse();
+            return await this.parse();
         }
     }
 
     async loadFromData(json: GLTF, buffers: ArrayBuffer[]): Promise<LoadedGLTF> {
         this.gltf = json;
         this.buffers = buffers;
-        return this.parse();
+        return await this.parse();
     }
 
     private isGLB(buffer: ArrayBuffer): boolean {
@@ -384,7 +384,7 @@ export class GLTFLoader {
         const baseUrl = '';
         await this.loadBuffers(baseUrl);
 
-        return this.parse();
+        return await this.parse();
     }
 
     private async loadBuffers(baseUrl: string): Promise<void> {
@@ -405,13 +405,13 @@ export class GLTFLoader {
         }
     }
 
-    private parse(): LoadedGLTF {
+    private async parse(): Promise<LoadedGLTF> {
         if (!this.gltf) throw new Error('No glTF data loaded');
 
         const nodes = this.parseNodes();
         const meshes = this.parseMeshes();
         const materials = this.parseMaterials();
-        const textures = this.parseTextures();
+        const textures = await this.parseTextures();
         const animations = this.parseAnimations();
         const skins = this.parseSkins();
         const cameras = this.parseCameras(nodes);
@@ -833,7 +833,7 @@ export class GLTFLoader {
         };
     }
 
-    private parseTextures(): TextureInfo[] {
+    private async parseTextures(): Promise<TextureInfo[]> {
         if (!this.gltf?.textures || !this.device) return [];
 
         const textures: TextureInfo[] = [];
@@ -851,7 +851,7 @@ export class GLTFLoader {
             if (gltfTexture.source !== undefined && this.gltf.images) {
                 const image = this.gltf.images[gltfTexture.source];
                 if (image) {
-                    const gpuTexture = this.createGPUTexture(image);
+                    const gpuTexture = await this.createGPUTexture(image);
                     if (gpuTexture) {
                         textureInfo.texture = gpuTexture;
                         textureInfo.width = gpuTexture.width;
@@ -884,14 +884,22 @@ export class GLTFLoader {
         return textures;
     }
 
-    private createGPUTexture(image: GLTFImage): GPUTexture | null {
+    private async createGPUTexture(image: GLTFImage): Promise<GPUTexture | null> {
         if (!this.device) return null;
 
-        if (image.uri) {
-            return null;
-        }
+        let imageBitmap: ImageBitmap | null = null;
 
-        if (image.bufferView !== undefined && this.gltf?.bufferViews) {
+        if (image.uri) {
+            if (image.uri.startsWith('data:')) {
+                const response = await fetch(image.uri);
+                const blob = await response.blob();
+                imageBitmap = await createImageBitmap(blob);
+            } else {
+                const response = await fetch(image.uri);
+                const blob = await response.blob();
+                imageBitmap = await createImageBitmap(blob);
+            }
+        } else if (image.bufferView !== undefined && this.gltf?.bufferViews) {
             const bufferView = this.gltf.bufferViews[image.bufferView];
             if (!bufferView) return null;
 
@@ -900,15 +908,33 @@ export class GLTFLoader {
 
             const byteOffset = bufferView.byteOffset ?? 0;
             const data = new Uint8Array(buffer, byteOffset, bufferView.byteLength);
-
-            const img = document.createElement('img');
             const blob = new Blob([data], { type: image.mimeType ?? 'image/png' });
-            const url = URL.createObjectURL(blob);
-
-            return null;
+            imageBitmap = await createImageBitmap(blob);
         }
 
-        return null;
+        if (!imageBitmap) return null;
+
+        const width = imageBitmap.width;
+        const height = imageBitmap.height;
+        const mipLevelCount = 1;
+
+        const texture = this.device.createTexture({
+            label: image.name ?? 'GLTFTexture',
+            size: [width, height],
+            format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+            mipLevelCount,
+        });
+
+        this.device.queue.copyExternalImageToTexture(
+            { source: imageBitmap },
+            { texture, mipLevel: 0 },
+            [width, height]
+        );
+
+        imageBitmap.close();
+
+        return texture;
     }
 
     private createGPUSampler(sampler: GLTFSampler): GPUSampler | null {

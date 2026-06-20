@@ -29,6 +29,7 @@ export class PathTracer {
     private depthTexture: GPUTexture | null = null;
     private motionVectorTexture: GPUTexture | null = null;
     private materialSampler: GPUSampler | null = null;
+    private white1x1Texture: GPUTexture | null = null;
 
     private bindGroup: GPUBindGroup | null = null;
 
@@ -108,6 +109,20 @@ export class PathTracer {
             addressModeU: 'repeat',
             addressModeV: 'repeat',
         });
+
+        this.white1x1Texture = device.createTexture({
+            label: 'White1x1',
+            size: [1, 1],
+            format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        const whiteData = new Uint8Array([255, 255, 255, 255]);
+        device.queue.writeTexture(
+            { texture: this.white1x1Texture },
+            whiteData,
+            { bytesPerRow: 4, rowsPerImage: 1 },
+            { width: 1, height: 1 }
+        );
     }
 
     public createOutputTextures(width: number, height: number): void {
@@ -388,7 +403,7 @@ export class PathTracer {
                     binding: 10 + i,
                     resource: (sceneData.textures[i]?.texture && sceneData.textures[i].texture!)
                         ? sceneData.textures[i].texture!.createView()
-                        : (this.normalTexture?.createView() ?? colorView),
+                        : this.white1x1Texture!.createView(),
                 })),
                 { binding: 18, resource: this.materialSampler! },
             ],
