@@ -45,7 +45,9 @@ struct PBRMaterialData {
     subsurface: f32,
     alphaCutoff: f32,
     flags: u32,
-    pad0: vec3<f32>,
+    baseColorTexIdx: i32,
+    metallicRoughnessTexIdx: i32,
+    emissiveTexIdx: i32,
 }
 
 struct LightData {
@@ -63,6 +65,57 @@ struct Ray {
     tMax: f32,
 }
 
+fn sample_mat_tex(idx: i32, uv: vec2<f32>) -> vec4<f32> {
+    switch (idx) {
+        case 0 { return textureSample(mat_tex0, mat_sampler, uv); }
+        case 1 { return textureSample(mat_tex1, mat_sampler, uv); }
+        case 2 { return textureSample(mat_tex2, mat_sampler, uv); }
+        case 3 { return textureSample(mat_tex3, mat_sampler, uv); }
+        case 4 { return textureSample(mat_tex4, mat_sampler, uv); }
+        case 5 { return textureSample(mat_tex5, mat_sampler, uv); }
+        case 6 { return textureSample(mat_tex6, mat_sampler, uv); }
+        default { return textureSample(mat_tex7, mat_sampler, uv); }
+    }
+}
+
+struct ResolvedMaterial {
+    baseColor: vec4<f32>,
+    metallic: f32,
+    roughness: f32,
+    emissive: vec3<f32>,
+    alphaCutoff: f32,
+}
+
+fn resolve_material(material: PBRMaterialData, uv: vec2<f32>) -> ResolvedMaterial {
+    var r: ResolvedMaterial;
+    r.baseColor = material.baseColor;
+    r.metallic = material.metallic;
+    r.roughness = material.roughness;
+    r.emissive = material.emissive;
+    r.alphaCutoff = material.alphaCutoff;
+
+    if ((material.flags & 0x1u) != 0u && material.baseColorTexIdx >= 0) {
+        let sampled = sample_mat_tex(material.baseColorTexIdx, uv);
+        r.baseColor = r.baseColor * sampled;
+    }
+
+    if ((material.flags & 0x2u) != 0u && material.metallicRoughnessTexIdx >= 0) {
+        let mr = sample_mat_tex(material.metallicRoughnessTexIdx, uv);
+        r.metallic = r.metallic * mr.b;
+        r.roughness = r.roughness * mr.g;
+    }
+
+    if ((material.flags & 0x10u) != 0u && material.emissiveTexIdx >= 0) {
+        let em = sample_mat_tex(material.emissiveTexIdx, uv);
+        r.emissive = r.emissive * em.rgb;
+    }
+
+    r.roughness = clamp(r.roughness, 0.001, 1.0);
+    r.metallic = clamp(r.metallic, 0.0, 1.0);
+
+    return r;
+}
+
 struct RayHit {
     t: f32, u: f32, v: f32,
     triangleID: u32,
@@ -75,6 +128,18 @@ struct RayHit {
 @group(0) @binding(4) var<storage, read> lights: array<LightData>;
 @group(0) @binding(5) var texture_color: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(6) var texture_history: texture_storage_2d<rgba32float, read_write>;
+@group(0) @binding(7) var texture_normal: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(8) var texture_depth: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(9) var texture_motion: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(10) var mat_tex0: texture_2d<f32>;
+@group(0) @binding(11) var mat_tex1: texture_2d<f32>;
+@group(0) @binding(12) var mat_tex2: texture_2d<f32>;
+@group(0) @binding(13) var mat_tex3: texture_2d<f32>;
+@group(0) @binding(14) var mat_tex4: texture_2d<f32>;
+@group(0) @binding(15) var mat_tex5: texture_2d<f32>;
+@group(0) @binding(16) var mat_tex6: texture_2d<f32>;
+@group(0) @binding(17) var mat_tex7: texture_2d<f32>;
+@group(0) @binding(18) var mat_sampler: sampler;
 
 fn pcg32(seed: u32) -> u32 {
     var state = seed * 747796405u + 2891336453u;
@@ -417,7 +482,7 @@ fn sample_directional_light(light: LightData, si: SurfaceInteraction) -> vec3<f3
     return light.color * light.intensity * NoL;
 }
 
-fn compute_direct_lighting(si: SurfaceInteraction, wo: vec3<f32>, material: PBRMaterialData, rng: ptr<function, RNG>) -> vec3<f32> {
+fn compute_direct_lighting(si: SurfaceInteraction, wo: vec3<f32>, material: ResolvedMaterial, rng: ptr<function, RNG>) -> vec3<f32> {
     var directLight = vec3<f32>(0.0);
 
     if (camera.enableNEE == 0u || camera.lightCount == 0u) {
@@ -484,7 +549,7 @@ fn compute_direct_lighting(si: SurfaceInteraction, wo: vec3<f32>, material: PBRM
     return directLight;
 }
 
-fn sample_bsdf(si: SurfaceInteraction, wo: vec3<f32>, material: PBRMaterialData, rng: ptr<function, RNG>) -> vec4<f32> {
+fn sample_bsdf(si: SurfaceInteraction, wo: vec3<f32>, material: ResolvedMaterial, rng: ptr<function, RNG>) -> vec4<f32> {
     let u = rng_next2(rng);
     let diffuseWeight = 1.0 - material.metallic;
     let specularWeight = material.metallic + 0.04 * (1.0 - material.metallic);
@@ -552,6 +617,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rng = rng_init(pixel, camera.frameCount, camera.sampleCount);
 
     var radiance = vec3<f32>(0.0);
+    var firstHitDepth = 1e30f;
+    var firstHitNormal = vec3<f32>(0.0);
+    var firstHitValid = false;
 
     let numSamples = max(1u, camera.sampleCount);
     for (var s = 0u; s < numSamples; s++) {
@@ -567,8 +635,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
 
+            if (s == 0u && depth == 0u) {
+                firstHitDepth = hit.t;
+                let si = get_surface_interaction(hit, ray);
+                firstHitNormal = si.shadingNormal;
+                firstHitValid = true;
+            }
+
             let si = get_surface_interaction(hit, ray);
-            let material = materials[si.materialID];
+            let matData = materials[si.materialID];
+            let material = resolve_material(matData, si.uv);
             let wo = -ray.direction;
 
             pathRadiance = pathRadiance + throughput * material.emissive;
@@ -634,4 +710,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     textureStore(texture_color, pixel, vec4<f32>(radiance, 1.0));
     textureStore(texture_history, pixel, vec4<f32>(radiance, 1.0));
+
+    var depthVal = 1e30f;
+    var normalVal = vec3<f32>(0.0);
+    if (firstHitValid) {
+        depthVal = firstHitDepth;
+        normalVal = firstHitNormal;
+    }
+    textureStore(texture_depth, pixel, vec4<f32>(depthVal, 0.0, 0.0, 0.0));
+    textureStore(texture_normal, pixel, vec4<f32>(normalVal, 0.0));
+    textureStore(texture_motion, pixel, vec4<f32>(0.0, 0.0, 0.0, 0.0));
 }

@@ -28,6 +28,7 @@ export class PathTracer {
     private normalTexture: GPUTexture | null = null;
     private depthTexture: GPUTexture | null = null;
     private motionVectorTexture: GPUTexture | null = null;
+    private materialSampler: GPUSampler | null = null;
 
     private bindGroup: GPUBindGroup | null = null;
 
@@ -44,6 +45,16 @@ export class PathTracer {
 
         const device = this.device;
 
+        const MAX_TEXTURES = 8;
+        const textureEntries: GPUBindGroupLayoutEntry[] = [];
+        for (let i = 0; i < MAX_TEXTURES; i++) {
+            textureEntries.push({
+                binding: 10 + i,
+                visibility: GPUShaderStage.COMPUTE,
+                texture: { sampleType: 'float', viewDimension: '2d', multisampled: false },
+            });
+        }
+
         this.bindGroupLayout = device.createBindGroupLayout({
             label: 'PathTracer-BGL',
             entries: [
@@ -54,6 +65,15 @@ export class PathTracer {
                 { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                 { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-write', format: TEXTURE_FORMAT_RGBA32F as GPUTextureFormat } },
                 { binding: 6, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-write', format: TEXTURE_FORMAT_RGBA32F as GPUTextureFormat } },
+                { binding: 7, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: TEXTURE_FORMAT_RGBA32F as GPUTextureFormat } },
+                { binding: 8, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: TEXTURE_FORMAT_RGBA32F as GPUTextureFormat } },
+                { binding: 9, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: TEXTURE_FORMAT_RGBA32F as GPUTextureFormat } },
+                ...textureEntries,
+                {
+                    binding: 18,
+                    visibility: GPUShaderStage.COMPUTE,
+                    sampler: { type: 'filtering' },
+                },
             ],
         });
 
@@ -79,6 +99,14 @@ export class PathTracer {
             size: UNIFORM_SIZE,
             usage: BUFFER_USAGE_UNIFORM,
             label: 'PathTracer-Uniform',
+        });
+
+        this.materialSampler = device.createSampler({
+            magFilter: 'linear',
+            minFilter: 'linear',
+            mipmapFilter: 'linear',
+            addressModeU: 'repeat',
+            addressModeV: 'repeat',
         });
     }
 
@@ -353,6 +381,16 @@ export class PathTracer {
                 { binding: 4, resource: { buffer: lightBuffer } },
                 { binding: 5, resource: colorView },
                 { binding: 6, resource: historyView },
+                { binding: 7, resource: this.normalTexture?.createView() ?? colorView },
+                { binding: 8, resource: this.depthTexture?.createView() ?? colorView },
+                { binding: 9, resource: this.motionVectorTexture?.createView() ?? colorView },
+                ...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({
+                    binding: 10 + i,
+                    resource: (sceneData.textures[i]?.texture && sceneData.textures[i].texture!)
+                        ? sceneData.textures[i].texture!.createView()
+                        : (this.normalTexture?.createView() ?? colorView),
+                })),
+                { binding: 18, resource: this.materialSampler! },
             ],
             label: 'PathTracer-BG',
         });

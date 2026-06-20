@@ -311,9 +311,9 @@ export class MaterialSystem {
         data[15] = mat.alphaCutoff;
 
         dataU32[16] = this.getMaterialFlags(materialIndex);
-        data[17] = 0;
-        data[18] = 0;
-        data[19] = 0;
+        dataU32[17] = mat.baseColorTexture | 0;
+        dataU32[18] = mat.metallicRoughnessTexture | 0;
+        dataU32[19] = mat.emissiveTexture | 0;
 
         return data;
     }

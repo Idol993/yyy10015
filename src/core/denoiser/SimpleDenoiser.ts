@@ -76,7 +76,7 @@ export class SimpleDenoiser {
         encoder: GPUCommandEncoder,
         colorView: GPUTextureView,
         outputView: GPUTextureView,
-        _settings: { enableDenoiser?: boolean },
+        _settings: { enableDenoiser?: boolean; normalView?: GPUTextureView; depthView?: GPUTextureView; motionView?: GPUTextureView },
     ): void {
         this.createPipeline();
 

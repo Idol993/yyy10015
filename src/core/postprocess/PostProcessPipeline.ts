@@ -90,6 +90,8 @@ export class PostProcessPipeline {
     private sampler: GPUSampler | null = null;
     private pipelinesCreated = false;
     private currentSettings: RenderSettings | null = null;
+    private dofDepthTex: GPUTexture | null = null;
+    private dofDepthView: GPUTextureView | null = null;
 
     constructor(device: GPUDevice) {
         this.device = device;
@@ -286,45 +288,21 @@ export class PostProcessPipeline {
         this.updateUniformBuffer(camera, settings);
 
         let currentHDRView = inputView;
-        let dofTempTexture: GPUTexture | null = null;
-        let dofTempView: GPUTextureView | null = null;
 
         if (settings.enableDOF && this.pipelines.dof) {
-            dofTempTexture = this.device.createTexture({
-                label: 'DOFTempTexture',
-                size: [this.width, this.height],
-                format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat,
-                usage: TEXTURE_USAGE_STORAGE,
-            });
-            dofTempView = dofTempTexture.createView();
-
-            this.dispatchDOF(encoder, currentHDRView, dofTempView);
-            currentHDRView = dofTempView;
+            this.dispatchDOF(encoder, currentHDRView, outputView);
+            return;
         }
 
         if (settings.enableBloom && this.pipelines.bloomDownsample && this.pipelines.bloomUpsample && this.pipelines.bloomApply) {
-            const bloomCombined = this.device.createTexture({
-                label: 'BloomCombined',
-                size: [this.width, this.height],
-                format: TEXTURE_FORMAT_RGBA16F as GPUTextureFormat,
-                usage: TEXTURE_USAGE_STORAGE,
-            });
-            const bloomCombinedView = bloomCombined.createView();
-
             this.dispatchBloomDownsample(encoder, currentHDRView, settings);
             this.dispatchBloomUpsample(encoder);
-            this.dispatchBloomApply(encoder, currentHDRView, bloomCombinedView, settings);
-
-            this.dispatchTonemap(encoder, bloomCombinedView, outputView, false);
-
-            bloomCombined.destroy();
-        } else {
-            this.dispatchTonemap(encoder, currentHDRView, outputView, false);
+            this.dispatchBloomApply(encoder, currentHDRView, outputView, settings);
+            this.dispatchTonemap(encoder, outputView, outputView, false);
+            return;
         }
 
-        if (dofTempTexture) {
-            dofTempTexture.destroy();
-        }
+        this.dispatchTonemap(encoder, currentHDRView, outputView, false);
     }
 
     finalizeToSwapChain(
@@ -499,28 +477,31 @@ export class PostProcessPipeline {
     ): void {
         if (!this.pipelines.dof || !this.bindGroupLayouts.dof || !this.uniformBuffer) return;
 
-        const depthTexture = this.device.createTexture({
-            label: 'DOFPlaceholderDepth',
-            size: [this.width, this.height],
-            format: 'r32float',
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        });
-        const depthView = depthTexture.createView();
+        if (!this.dofDepthTex || this.dofDepthTex.width !== this.width || this.dofDepthTex.height !== this.height) {
+            this.dofDepthTex?.destroy();
+            this.dofDepthTex = this.device.createTexture({
+                label: 'DOFPlaceholderDepth',
+                size: [this.width, this.height],
+                format: 'r32float',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            this.dofDepthView = this.dofDepthTex.createView();
 
-        const zeros = new Float32Array(this.width * this.height);
-        this.device.queue.writeTexture(
-            { texture: depthTexture },
-            zeros,
-            { bytesPerRow: this.width * 4, rowsPerImage: this.height },
-            { width: this.width, height: this.height, depthOrArrayLayers: 1 }
-        );
+            const zeros = new Float32Array(this.width * this.height);
+            this.device.queue.writeTexture(
+                { texture: this.dofDepthTex },
+                zeros,
+                { bytesPerRow: this.width * 4, rowsPerImage: this.height },
+                { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+            );
+        }
 
         const bindGroup = this.device.createBindGroup({
             layout: this.bindGroupLayouts.dof,
             entries: [
                 { binding: 0, resource: { buffer: this.uniformBuffer } },
                 { binding: 1, resource: inputView },
-                { binding: 2, resource: depthView },
+                { binding: 2, resource: this.dofDepthView! },
                 { binding: 3, resource: outputView },
             ],
         });
@@ -533,8 +514,6 @@ export class PostProcessPipeline {
             Math.ceil(this.height / WORKGROUP_SIZE)
         );
         pass.end();
-
-        depthTexture.destroy();
     }
 
     private dispatchTonemap(
@@ -580,6 +559,8 @@ export class PostProcessPipeline {
 
     destroy(): void {
         this.destroyBloomMips();
+
+        if (this.dofDepthTex) { this.dofDepthTex.destroy(); this.dofDepthTex = null; this.dofDepthView = null; }
 
         if (this.uniformBuffer) {
             this.uniformBuffer.destroy();

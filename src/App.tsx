@@ -12,6 +12,7 @@ import { PostProcessPipeline } from '@/core/postprocess/PostProcessPipeline';
 import { PathTracer } from '@/core/pathtracer/PathTracer';
 import { BVHBuilder } from '@/core/bvh/BVHBuilder';
 import { SimpleDenoiser } from '@/core/denoiser/SimpleDenoiser';
+import { SVGFDenoiser } from '@/core/denoiser/SVGFDenoiser';
 import { useRendererStore } from '@/store/useRendererStore';
 import { createCornellBox } from '@/store/createDefaultScenes';
 import type { SceneData, CameraParams, RenderSettings, vec3 } from '@/types';
@@ -20,6 +21,9 @@ interface PathTracerAdapter {
     render(encoder: GPUCommandEncoder, colorView: GPUTextureView, historyView: GPUTextureView, camera: CameraParams, settings: RenderSettings, sceneData: SceneData): void;
     resetAccumulation(): void;
     setBVHBuffer(buffer: GPUBuffer | null): void;
+    getNormalTexture?(): GPUTexture | null;
+    getDepthTexture?(): GPUTexture | null;
+    getMotionVectorTexture?(): GPUTexture | null;
 }
 
 interface CameraState {
@@ -73,7 +77,7 @@ export default function App() {
     const cameraRef = useRef<FreeCameraController | null>(null);
     const pathTracerRef = useRef<PathTracer | null>(null);
     const bvhBuilderRef = useRef<BVHBuilder | null>(null);
-    const denoiserRef = useRef<SimpleDenoiser | null>(null);
+    const denoiserRef = useRef<SVGFDenoiser | null>(null);
     const animationRef = useRef<number>(0);
     const lastTimeRef = useRef<number>(0);
     const webgpuSupportedRef = useRef(true);
@@ -109,7 +113,7 @@ export default function App() {
             postProcessPipeline.resize(canvas.width, canvas.height);
             postProcessPipeline.createPipelines();
 
-            const denoiser = new SimpleDenoiser(device);
+            const denoiser = new SVGFDenoiser(device);
             denoiser.resize(canvas.width, canvas.height);
             denoiserRef.current = denoiser;
 
@@ -129,6 +133,15 @@ export default function App() {
                 },
                 setBVHBuffer(buffer: GPUBuffer | null): void {
                     pathTracer.setBVHBuffer(buffer);
+                },
+                getNormalTexture(): GPUTexture | null {
+                    return pathTracer.getNormalTexture?.() ?? null;
+                },
+                getDepthTexture(): GPUTexture | null {
+                    return pathTracer.getDepthTexture?.() ?? null;
+                },
+                getMotionVectorTexture(): GPUTexture | null {
+                    return pathTracer.getMotionVectorTexture?.() ?? null;
                 },
             };
 
@@ -151,9 +164,12 @@ export default function App() {
                     encoder: GPUCommandEncoder,
                     colorView: GPUTextureView,
                     outputView: GPUTextureView,
-                    settings: RenderSettings,
+                    settings: any,
                 ): void {
                     denoiser.denoise(encoder, colorView, outputView, settings);
+                },
+                resetHistory(): void {
+                    denoiser.resetHistory();
                 },
             };
 

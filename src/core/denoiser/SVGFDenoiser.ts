@@ -1,8 +1,7 @@
-import { DeviceManager } from '@/core/webgpu/DeviceManager';
-import { TEXTURE_USAGE_STORAGE } from '@/types';
-import reprojectShader from './Reproject.wgsl';
-import temporalShader from './TemporalAccumulate.wgsl';
-import bilateralShader from './BilateralFilter.wgsl';
+import { TEXTURE_USAGE_STORAGE, BUFFER_USAGE_UNIFORM } from '@/types';
+import reprojectShader from './Reproject.wgsl?raw';
+import temporalShader from './TemporalAccumulate.wgsl?raw';
+import bilateralShader from './BilateralFilter.wgsl?raw';
 
 export interface DenoiserSettings {
     temporalAlpha: number;
@@ -29,7 +28,7 @@ export const DEFAULT_DENOISER_SETTINGS: DenoiserSettings = {
 };
 
 export class SVGFDenoiser {
-    private deviceManager: DeviceManager;
+    private device: GPUDevice;
     private width: number = 0;
     private height: number = 0;
 
@@ -66,19 +65,21 @@ export class SVGFDenoiser {
     private historyReadIndex: number = 0;
     private frameCount: number = 0;
 
-    constructor(deviceManager?: DeviceManager) {
-        this.deviceManager = deviceManager ?? DeviceManager.getInstance();
+    constructor(device: GPUDevice) {
+        this.device = device;
     }
 
     public createPipelines(): void {
-        const device = this.deviceManager.getDevice();
+        if (this.reprojectPipeline) return;
+
+        const device = this.device;
 
         this.reprojectBGL = device.createBindGroupLayout({
             label: 'SVGFDenoiser-Reproject-BGL',
             entries: [
                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-                { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-                { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
                 { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
                 { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
                 { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
@@ -104,8 +105,8 @@ export class SVGFDenoiser {
             entries: [
                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
                 { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-                { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-                { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
                 { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
                 { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
             ],
@@ -153,19 +154,19 @@ export class SVGFDenoiser {
         const ubSize = 256;
         this.reprojectUB = device.createBuffer({
             size: ubSize,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            usage: BUFFER_USAGE_UNIFORM,
         });
         this.temporalUB = device.createBuffer({
             size: ubSize,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            usage: BUFFER_USAGE_UNIFORM,
         });
         this.bilateralUB = device.createBuffer({
             size: ubSize,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            usage: BUFFER_USAGE_UNIFORM,
         });
     }
 
-    public denoise(
+    public denoiseFull(
         commandEncoder: GPUCommandEncoder,
         radiance: GPUTextureView,
         normal: GPUTextureView,
@@ -175,11 +176,9 @@ export class SVGFDenoiser {
         invViewProjection: Float32Array,
         settings: DenoiserSettings = DEFAULT_DENOISER_SETTINGS,
     ): GPUTextureView {
-        if (!this.reprojectPipeline || !this.temporalPipeline || !this.bilateralPipeline) {
-            throw new Error('Pipelines not created. Call createPipelines() first.');
-        }
+        this.createPipelines();
 
-        const device = this.deviceManager.getDevice();
+        const device = this.device;
         this.frameCount++;
 
         const reprojectData = new Float32Array(36);
@@ -257,15 +256,15 @@ export class SVGFDenoiser {
 
         const pass = commandEncoder.beginComputePass({ label: 'SVGF-Denoise' });
 
-        pass.setPipeline(this.reprojectPipeline);
+        pass.setPipeline(this.reprojectPipeline!);
         pass.setBindGroup(0, reprojectBG);
         pass.dispatchWorkgroups(workgroupX, workgroupY);
 
-        pass.setPipeline(this.temporalPipeline);
+        pass.setPipeline(this.temporalPipeline!);
         pass.setBindGroup(0, temporalBG);
         pass.dispatchWorkgroups(workgroupX, workgroupY);
 
-        pass.setPipeline(this.bilateralPipeline);
+        pass.setPipeline(this.bilateralPipeline!);
         pass.setBindGroup(0, bilateralBG);
         pass.dispatchWorkgroups(workgroupX, workgroupY);
 
@@ -275,6 +274,105 @@ export class SVGFDenoiser {
 
         return this.outputView!;
     }
+
+    public denoise(
+        commandEncoder: GPUCommandEncoder,
+        radiance: GPUTextureView,
+        outputView: GPUTextureView,
+        settings: { normalView?: GPUTextureView; depthView?: GPUTextureView; motionView?: GPUTextureView; prevViewProjection?: Float32Array; invViewProjection?: Float32Array } = {},
+    ): void {
+        this.denoiseToOutput(commandEncoder, radiance, outputView, {
+            normal: settings.normalView,
+            depth: settings.depthView,
+            motion: settings.motionView,
+            prevViewProjection: settings.prevViewProjection,
+            invViewProjection: settings.invViewProjection,
+        });
+    }
+
+    public denoiseToOutput(
+        commandEncoder: GPUCommandEncoder,
+        radiance: GPUTextureView,
+        outputView: GPUTextureView,
+        settings: { normal?: GPUTextureView; depth?: GPUTextureView; motion?: GPUTextureView; prevViewProjection?: Float32Array; invViewProjection?: Float32Array } = {},
+    ): void {
+        const defaultSettings = DEFAULT_DENOISER_SETTINGS;
+        const identity = new Float32Array(16);
+        identity[0] = 1; identity[5] = 1; identity[10] = 1; identity[15] = 1;
+
+        if (!this.normalFallbackTex || this.normalFallbackTex.width !== this.width || this.normalFallbackTex.height !== this.height) {
+            this.normalFallbackTex?.destroy();
+            this.depthFallbackTex?.destroy();
+            this.motionFallbackTex?.destroy();
+            this.normalFallbackTex = this.device.createTexture({
+                size: [this.width, this.height], format: 'rgba32float',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            this.depthFallbackTex = this.device.createTexture({
+                size: [this.width, this.height], format: 'rgba32float',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            this.motionFallbackTex = this.device.createTexture({
+                size: [this.width, this.height], format: 'rgba32float',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            const zeros = new Float32Array(this.width * this.height * 4);
+            this.device.queue.writeTexture({ texture: this.normalFallbackTex }, zeros,
+                { bytesPerRow: this.width * 16, rowsPerImage: this.height }, { width: this.width, height: this.height });
+            this.device.queue.writeTexture({ texture: this.depthFallbackTex }, zeros,
+                { bytesPerRow: this.width * 16, rowsPerImage: this.height }, { width: this.width, height: this.height });
+            this.device.queue.writeTexture({ texture: this.motionFallbackTex }, zeros,
+                { bytesPerRow: this.width * 16, rowsPerImage: this.height }, { width: this.width, height: this.height });
+        }
+
+        const normalV = settings.normal ?? this.normalFallbackTex.createView();
+        const depthV = settings.depth ?? this.depthFallbackTex.createView();
+        const motionV = settings.motion ?? this.motionFallbackTex.createView();
+        const prevVP = settings.prevViewProjection ?? identity;
+        const invVP = settings.invViewProjection ?? identity;
+
+        const denoised = this.denoiseFull(commandEncoder, radiance, normalV, depthV, motionV, prevVP, invVP, defaultSettings);
+
+        if (denoised !== outputView) {
+            const copyShader = /* wgsl */ `
+@group(0) @binding(0) var inputTex: texture_2d<f32>;
+@group(0) @binding(1) var outputTex: texture_storage_2d<rgba16float, write>;
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let px = vec2<i32>(gid.xy);
+    let dims = textureDimensions(inputTex);
+    if (gid.x >= dims.x || gid.y >= dims.y) { return; }
+    textureStore(outputTex, px, textureLoad(inputTex, px, 0));
+}`;
+            if (!this.copyPipeline) {
+                const module = this.device.createShaderModule({ code: copyShader });
+                const layout = this.device.createBindGroupLayout({ entries: [
+                    { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+                    { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: 'rgba16float', access: 'write-only' } },
+                ]});
+                this.copyPipeline = this.device.createComputePipeline({
+                    layout: this.device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+                    compute: { module, entryPoint: 'main' },
+                });
+                this.copyBGL = layout;
+            }
+            const bg = this.device.createBindGroup({
+                layout: this.copyBGL!,
+                entries: [{ binding: 0, resource: denoised }, { binding: 1, resource: outputView }],
+            });
+            const p = commandEncoder.beginComputePass({ label: 'SVGFCopyOutput' });
+            p.setPipeline(this.copyPipeline!);
+            p.setBindGroup(0, bg);
+            p.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
+            p.end();
+        }
+    }
+
+    private normalFallbackTex: GPUTexture | null = null;
+    private depthFallbackTex: GPUTexture | null = null;
+    private motionFallbackTex: GPUTexture | null = null;
+    private copyPipeline: GPUComputePipeline | null = null;
+    private copyBGL: GPUBindGroupLayout | null = null;
 
     public getOutputView(): GPUTextureView | null {
         return this.outputView;
@@ -288,7 +386,7 @@ export class SVGFDenoiser {
         this.width = width;
         this.height = height;
 
-        const device = this.deviceManager.getDevice();
+        const device = this.device;
 
         const createHDRTexture = (label: string): { texture: GPUTexture; view: GPUTextureView } => {
             const texture = device.createTexture({
@@ -342,6 +440,7 @@ export class SVGFDenoiser {
             this.momentsPing, this.momentsPong,
             this.reprojectedColor, this.disocclusionWeight,
             this.outputTexture,
+            this.normalFallbackTex, this.depthFallbackTex, this.motionFallbackTex,
         ];
         for (const tex of textures) {
             if (tex) tex.destroy();
@@ -356,6 +455,7 @@ export class SVGFDenoiser {
         this.disocclusionWeightView = null;
         this.outputTexture = null;
         this.outputView = null;
+        this.normalFallbackTex = this.depthFallbackTex = this.motionFallbackTex = null;
     }
 
     public destroy(): void {
@@ -369,6 +469,8 @@ export class SVGFDenoiser {
 
         this.reprojectPipeline = this.temporalPipeline = this.bilateralPipeline = null;
         this.reprojectBGL = this.temporalBGL = this.bilateralBGL = null;
+        this.copyPipeline = null;
+        this.copyBGL = null;
         this.linearSampler = null;
     }
 }
